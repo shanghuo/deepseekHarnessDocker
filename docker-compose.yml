@@ -1,0 +1,66 @@
+# ===== 使用说明：如何运行本 compose 文件 =====
+# 启动 / 重建（Windows PowerShell）: docker compose up -d --build
+# 启动 / 重建（Linux bash / sh）    : docker compose up -d --build
+# 注：首次启动或修改过 Dockerfile / build.args 后需加 --build 重建镜像；日常启动可省略 --build。
+# 升级 dsh 本体（拉最新 @deepseek-ai/dsh，需 --no-cache 绕开 Docker 层缓存，否则不会真正重新下载）：
+# Windows（PowerShell）: docker compose build --no-cache; docker compose up -d（升级前需要备份并删除 dsh-home\.credentials.yaml）
+# Linux（bash / sh）    : docker compose build --no-cache && docker compose up -d
+#
+# ===== 以下均为示例值，请按自己实际情况替换后再使用 =====
+# 192.168.1.100  代理 IP
+# 7890           代理端口
+# 192.168.1.101  本机/容器对外 IP（用于 HTTPS 自签名证书的 CN / SAN）
+# 10080          宿主机对外 HTTP 端口
+# 10443          宿主机对外 HTTPS 端口
+# 10500-10999    开发阶段对外暴露端口范围
+# 代理必须设置，可以只是一个本地流量转发+监控审计，用于追踪关键请求溯源，提升安全性，必要时也可以用作优化网络。绝对禁止利用代理把ds请求转到非宿主所在地的其它网络，可能导致封号
+services:
+  dsh:
+    build:
+      context: .
+      args:
+        # 构建期代理（与下方运行时 environment 保持一致；docker build 的 RUN 阶段用；以下为示例值，根据实际填写）
+        HTTP_PROXY: http://192.168.1.100:7890
+        HTTPS_PROXY: http://192.168.1.100:7890
+        ALL_PROXY: http://192.168.1.100:7890
+        NO_PROXY: localhost,127.0.0.1,::1
+        # ===== 本地环境信息（Dockerfile 中以 ARG 变量引用；修改后需重建镜像；以下为示例值，根据实际填写）=====
+        HOST_IP: 192.168.1.101                     # 本机/容器对外 IP：用于 HTTPS 自签名证书的 CN / SAN
+        PROXY_URL: http://192.168.1.100:7890       # 开发阶段出网代理，注入容器全局记忆 /dsh/MEMORY.md
+        DEV_PORT_RANGE: 10500-10999                # 开发阶段对外暴露端口范围，注入容器全局记忆 /dsh/MEMORY.md
+    image: dsh:latest
+    container_name: deepseekai-dsh
+    restart: unless-stopped
+    # 资源限制：2 核 2G
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2g
+    ports:
+      - "10080:80"           # HTTP（nginx 入口，根路径 dsh、/code/ code-server）
+      - "10443:443"          # HTTPS（自签名证书）
+      # 预留端口：主机 10500-10999 → 容器 10500-10999（同号映射，开发测试阶段对外服务只能占此范围，生产阶段无此限制，按需映射正式端口即可）
+      - "10500-10999:10500-10999"
+    environment:
+      DSH_HOME: /dsh
+      # 会话遥测保持默认关闭
+      DSH_TELEMETRY_DISABLED: "1"
+      # 让 Node 走 HTTP_PROXY / HTTPS_PROXY
+      NODE_USE_ENV_PROXY: "1"
+      # 运行时代理（以下为示例值，根据实际填写）
+      HTTP_PROXY: http://192.168.1.100:7890
+      HTTPS_PROXY: http://192.168.1.100:7890
+      ALL_PROXY: http://192.168.1.100:7890
+      NO_PROXY: localhost,127.0.0.1,::1
+      # 也可启动时注入 API Key（或在 Web UI 的 Settings→Models 里填写）
+      # DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      # dsh 配置/凭据/会话持久化
+      - ./dsh-home:/dsh
+      # 智能体默认工作目录（Web UI 中 Choose workspace 选 /workspace）
+      - ./workspace:/workspace
+      # code-server 数据（已装扩展、IDE 状态）持久化，重建镜像不丢；配置在镜像内
+      - ./code-server-data:/root/.local/share/code-server
+      # HTTPS 证书目录（宿主可覆盖 dsh.crt/dsh.key，覆盖后容器内自动重载生效；首次为空时容器自动生成自签名证书）
+      - ./certs:/etc/nginx/certs
