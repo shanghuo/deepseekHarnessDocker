@@ -1,0 +1,2 @@
+# deepseekHarnessDocker
+用于把deepseekHarness关在Docker中相对隔离运行，避免破坏宿主机
