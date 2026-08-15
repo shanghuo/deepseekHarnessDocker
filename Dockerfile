@@ -235,6 +235,36 @@ RUN printf '%s\n' \
     ') &' \
     '' \
     '/opt/code-server/start.sh >> /var/log/code-server.log 2>&1 &' \
+    '' \
+    '# dsh 凭据处理：仅当 $DSH_HOME/.credentials.yaml 存在时才处理（文件权限要求 0600，' \
+    '# Windows 宿主 bind mount 无法保持，会导致 dsh 启动失败）。提取其中的 DEEPSEEK_API_KEY，' \
+    '# 删除文件；dsh 启动就绪后通过 HTTP 请求 /api/credentials.set 把 key 提交回去。' \
+    'CREDS_FILE="${DSH_HOME:-/dsh}/.credentials.yaml"' \
+    'DSH_CRED_KEY=""' \
+    'if [ -f "$CREDS_FILE" ]; then' \
+    '  DSH_CRED_KEY=$(sed -n "s/^[[:space:]]*DEEPSEEK_API_KEY:[[:space:]]*//p" "$CREDS_FILE" | head -n 1 | tr -d "\r")' \
+    '  case "$DSH_CRED_KEY" in' \
+    '    \"*) DSH_CRED_KEY=${DSH_CRED_KEY#\"}; DSH_CRED_KEY=${DSH_CRED_KEY%\"} ;;' \
+    '  esac' \
+    '  rm -f "$CREDS_FILE"' \
+    'fi' \
+    '' \
+    '# 提取到 key 时：后台一次性 helper 轮询等待 dsh /api 就绪，再以 HTTP 请求提交凭据' \
+    '# （rpcId 为回显令牌，UUID 即可）；dsh 保持前台 exec，启动与信号行为与原逻辑完全一致' \
+    'if [ -n "$DSH_CRED_KEY" ]; then' \
+    '  (' \
+    '    rpc_id=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)' \
+    '    [ -n "$rpc_id" ] || rpc_id="boot-credential-1"' \
+    '    body="{\"type\":\"client-request\",\"rpcId\":\"$rpc_id\",\"method\":\"credentials.set\",\"payload\":{\"ref\":\"DEEPSEEK_API_KEY\",\"value\":\"$DSH_CRED_KEY\"}}"' \
+    '    tries=0' \
+    '    while [ "$tries" -lt 60 ]; do' \
+    '      resp=$(curl -sS -m 2 -X POST "http://127.0.0.1:3080/api/credentials.set" -H "content-type: application/json" --data "$body" 2>/dev/null)' \
+    '      echo "$resp" | grep -qE "\"ok\"[: ]*true" && exit 0' \
+    '      tries=$((tries + 1))' \
+    '      sleep 1' \
+    '    done' \
+    '  ) &' \
+    'fi' \
     'exec dsh web --patch /etc/dsh-webserver.cordis.yml' \
     > /usr/local/bin/boot.sh
 RUN chmod +x /opt/code-server/start.sh /usr/local/bin/boot.sh
